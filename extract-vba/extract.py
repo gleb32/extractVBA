@@ -59,10 +59,10 @@ EXTENSIONS = {VBCompType.STD_MODULE: '.bas',
 def open_workbook(workbook_file):
     """ Open the workbook and then closes the workbook when finished. """
     try:
-        xl = Dispatch("Excel.Application")
-        xl.Visible = 0
+        excel_app = Dispatch("Excel.Application")
+        excel_app.Visible = 0
         try:
-            wb_com_obj = xl.Workbooks.Open(workbook_file)
+            wb_com_obj = excel_app.Workbooks.Open(workbook_file)
             yield wb_com_obj
         except com_error:
             # probably file not found.
@@ -82,15 +82,28 @@ def open_workbook(workbook_file):
         wb_com_obj.Close(False)   # Close the workbook without saving changes.
 
 
-
 @contextmanager
-def close_access_db(access_app):
+def open_access_db(access_file):
     """
-    Closes the access database when finished, even on error.
+    Open Access and the database, returning the Access application COM
+    object. Upon competion or error, close the open database.
 
-    https://msdn.microsoft.com/en-us/library/office/ff836850.aspx
+    + https://msdn.microsoft.com/en-us/library/office/ff837226.aspx
+    + https://msdn.microsoft.com/en-us/library/office/ff836850.aspx
     """
     try:
+        # TODO: Need to open access first.
+        access_app = Dispatch("Access.Application")
+#        access_app.Visible = 1
+        try:
+            access_app.OpenCurrentDatabase(access_file)
+        except com_error as err:
+            # possibly already have the database open
+            # TODO: better error handling here.
+            # pywintypes.com_error: (-2147352567, 'Exception occurred.',
+            #     (0, None, 'You already have the database open.', None,
+            #      -1, -2146820421), None)
+            print(err)
         yield access_app
     finally:
         access_app.CloseCurrentDatabase()
@@ -122,13 +135,13 @@ def save_component(save_path, text, vbname, ext):
         openf.write(text)
 
 
-def extract_component(component):
+def extract_component(vb_component):
     """
     Exract the component information from the component COM object.
     """
-    vb_name = component.Name
-    vb_type = component.Type
-    vb_code_module = component.CodeModule
+    vb_name = vb_component.Name
+    vb_type = vb_component.Type
+    vb_code_module = vb_component.CodeModule
     try:
         vb_src = vb_code_module.Lines(1, vb_code_module.CountOfLines)
     except com_error:
@@ -145,14 +158,21 @@ def extract_component(component):
     return (vb_name, vb_type, vb_code_module, vb_src)
 
 
-def extract_components(workbook, save_path):
+def extract_components(com_obj, save_path):
     """
-    extracts and saves all VBA in a given workbook.
+    extracts and saves all VBA in a given COM object.
     """
     i = 1
     while True:
         try:
-            component = workbook.VBProject.VBComponents(i)
+            project = com_obj.VBProject
+        except AttributeError:
+            # MS Access uses a sightly different structure
+            # http://stackoverflow.com/a/27385063/1354930
+            project = com_obj.VBE.VBProjects(1)
+
+        try:
+            component = project.VBComponents(i)
         except com_error:
             # TODO: Better error handling here.
             # pywintypes.com_error: (-2147352567, 'Exception occurred.',
@@ -167,38 +187,20 @@ def extract_components(workbook, save_path):
             ext = EXTENSIONS[vb_type]
             save_component(save_path, vb_src, vb_name, ext)
 
+        # We can't loop in a pythonic way because we can't just get a list
+        # of VBComponent items.
         i += 1
 
 
-def open_access_db(fn):
-    """
-    Open Access and the database and return the Access application COM object.
-
-    https://msdn.microsoft.com/en-us/library/office/ff837226.aspx
-    """
-    access_app = Dispatch("Access.Application")
-#    access_app.Visible = 1
-    try:
-        access_app.OpenCurrentDatabase(fn)
-    except com_error as err:
-        # possibly already have the database open
-        # TODO: better error handling here.
-        # pywintypes.com_error: (-2147352567, 'Exception occurred.',
-        #     (0, None, 'You already have the database open.', None,
-        #      -1, -2146820421), None)
-        print(err)
-    return access_app
-
-
-def main(folder=None,
+def main(path=None,
          excel_only=False,
          ):
+    """
+    """
+    if path is None:
+        raise ValueError("The 'path' argument is required")
 
-    if folder is None:
-        folder = ROOT_PATH
-
-
-    for dirpath, dirnames, filenames in os.walk(folder):
+    for dirpath, dirnames, filenames in os.walk(path):
         # skip over the .git directory, removing it so we don't traverse it.
         if '.git' in dirnames:
             dirnames.remove('.git')
@@ -236,7 +238,9 @@ def main(folder=None,
                 except FileExistsError:
                     pass
 
-#                with close_access_db(open_access_db(filepath)) as
+#                with close_access_db(open_access_db(filepath)) as opendb:
+                with open_access_db(filepath) as opendb:
+                    extract_components(opendb, save_path)
 
             elif ext == EXT_WORD:
                 # Extract from Word
@@ -252,10 +256,10 @@ def main(folder=None,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("folder",
-                        nargs='?',
-                        default=None,
-                        help="the folder to look for OFfice docs in",
+    parser.add_argument("path",
+#                        nargs='?',
+#                        default=None,
+                        help="the path to look for Office docs in",
                         type=str,
                         )
     parser.add_argument("-x", "--excel-only",
