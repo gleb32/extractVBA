@@ -57,35 +57,41 @@ EXTENSIONS = {VBCompType.STD_MODULE: '.bas',
 # ---------------------------------------------------------------------------
 def handle_com_err_code(err, allowed_codes):
     """
+    Passes specific win32com error codes, raising others.
+
     See https://msdn.microsoft.com/en-us/library/aa264975(v=vs.60).aspx
     for error codes.
 
-    + err.args
-      + from BaseException. Contains all arguments
+    Attributes of 'com_error':
+    --------------------------
+    ``err.args`` : tuple
+        from BaseException. Contains all arguments
+    ``err.hresult`` : int
+        ``err.args[0]``. Possibly a _win32com_ error code? Seems to always
+        be -2147352567
+    ``err.strerror`` : str
+        ``err.args[1]``. The error string (from  _win32com_?)
 
-    + err.hresult
-      + arr.args[0]. Possibly a _win32com_ error code?
-      + Seems to always be -2147352567
-    + err.strerror
-      + args[1]. The error string (from  _win32com_?)
-    + err.excepinfo
-      + args[2]
-      + seems to be everything from the COM object
-    + err.argerror
-      + possibly args[3]
-      + Seems to always be `None`
+    ``err.excepinfo`` : tuple
+        ``err.args[2]``. Seems to be everything from the COM error
 
-    + err.excepinfo:
-      + [0] : ??
-      + [1] : ?? Sometimes empty, sometimes "MOCVD BD" (Access)
-      + [2] : error text
-      + [3] : some path to ...\\VBA\\VBA7\\...
-      + [4] : VBA Error code + 1,000,000
-      + [5] : ?? Some non-static code.
+    ``err.argerror`` : unknown
+        Possibly ``err.args[3]``. Seems to always be `None`
+
+
+    Indicies of 'err.excepinfo':
+    ----------------------------
+    + [0] : ??
+    + [1] : ?? Sometimes empty, sometimes "MOCVD BD" (Access)
+    + [2] : error text
+    + [3] : some path to .../VBA/VBA7/...
+    + [4] : VBA Error code + 1,000,000
+    + [5] : ?? Some non-static code.
     """
     if not isinstance(allowed_codes, (list, tuple)):
         allowed_codes = (allowed_codes, )
 
+    # win32com seems to add 1,000,000 to the VBA error code. /shrug
     vb_err_code = err.excepinfo[4] - 1000000
 
     if vb_err_code not in allowed_codes:
