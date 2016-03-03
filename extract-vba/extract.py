@@ -14,16 +14,30 @@ Options:
     --version           # Show version.
 
 """
-import os.path
-import win32com.universal as universal
-from win32com.client import Dispatch
-from enum import IntEnum
+# ---------------------------------------------------------------------------
+### Imports
+# ---------------------------------------------------------------------------
+# Standard Library
+import argparse
 from contextlib import contextmanager
+from enum import IntEnum
+import os
+import os.path
+from win32com.client import Dispatch
+from win32com.universal import com_error
 
+# Third-party
+#from docopt import docopt
 
 ROOT_PATH = "C:\\gitlab\\temp"
 file1 = "MOCVD DBTPHJ v1.accdb"
 file2 = "MOCVD Equipment Report.xlsm"
+
+EXT_EXCEL = '.xlsm'
+EXT_ACCESS = '.accdb'
+EXT_WORD = '.docm'
+EXT_PPT = '.pptm'
+VALID_EXT = (EXT_EXCEL, EXT_ACCESS, EXT_WORD, EXT_PPT)
 
 
 class VBCompType(IntEnum):
@@ -42,13 +56,31 @@ EXTENSIONS = {VBCompType.STD_MODULE: '.bas',
 
 
 @contextmanager
-def close_workbook(workbook):
-    """ Closes the workbook when finished, even on error """
+def open_workbook(workbook_file):
+    """ Open the workbook and then closes the workbook when finished. """
     try:
-        yield workbook
+        xl = Dispatch("Excel.Application")
+        xl.Visible = 0
+        try:
+            wb_com_obj = xl.Workbooks.Open(workbook_file)
+            yield wb_com_obj
+        except com_error:
+            # probably file not found.
+            # TODO: better error handling
+            """
+            pywintypes.com_error: (-2147352567, 'Exception occurred.',
+            (0, 'Microsoft Excel', "'MOCVD Equipment Report.xlsm' could not
+            be found. Check the spelling of the file name, and verify
+            that the file location is correct.\n\nIf you are trying
+            to open the file from your list of most recently used
+            files, make sure that the file has not been renamed, moved,
+            or deleted.", 'xlmain11.chm', 0, -2146827284), None)
+            """
+            raise
     finally:
         # https://msdn.microsoft.com/en-us/library/office/ff838613.aspx
-        workbook.Close(False)   # Close the workbook without saving changes.
+        wb_com_obj.Close(False)   # Close the workbook without saving changes.
+
 
 
 @contextmanager
@@ -79,12 +111,13 @@ def quit_access(access_app):
     finally:
         access_app.Quit
 
-def save_component(text, vbname, ext):
+
+def save_component(save_path, text, vbname, ext):
     """
     Save the extracted VBA code to a file.
     """
-    write_path = os.path.join(ROOT_PATH, vbname + ext)
-    print("Writing to `{}`".format(write_path))
+    write_path = os.path.join(save_path, vbname + ext)
+    print("  Saving src to `{}`".format(write_path))
     with open(write_path, 'w', newline='\n') as openf:
         openf.write(text)
 
@@ -98,7 +131,7 @@ def extract_component(component):
     vb_code_module = component.CodeModule
     try:
         vb_src = vb_code_module.Lines(1, vb_code_module.CountOfLines)
-    except universal.com_error:
+    except com_error:
         # it's likely that this component doesn't have any code
         # TODO: Better error handling here.
         # pywintypes.com_error: (-2147352567, 'Exception occurred.',
@@ -112,7 +145,7 @@ def extract_component(component):
     return (vb_name, vb_type, vb_code_module, vb_src)
 
 
-def extract_components(workbook):
+def extract_components(workbook, save_path):
     """
     extracts and saves all VBA in a given workbook.
     """
@@ -120,7 +153,7 @@ def extract_components(workbook):
     while True:
         try:
             component = workbook.VBProject.VBComponents(i)
-        except universal.com_error:
+        except com_error:
             # TODO: Better error handling here.
             # pywintypes.com_error: (-2147352567, 'Exception occurred.',
             #   0, 'VBAProject', 'Subscript out of range',
@@ -132,18 +165,9 @@ def extract_components(workbook):
 
         if vb_src:
             ext = EXTENSIONS[vb_type]
-            save_component(vb_src, vb_name, ext)
+            save_component(save_path, vb_src, vb_name, ext)
 
         i += 1
-
-
-def open_excel_workbook(fn):
-    """
-    Open Excel and the workbook and return the woorbook COM object
-    """
-    xl = Dispatch("Excel.Application")
-    xl.Visible = 1
-    return xl.Workbooks.Open(fn)
 
 
 def open_access_db(fn):
@@ -156,7 +180,7 @@ def open_access_db(fn):
 #    access_app.Visible = 1
     try:
         access_app.OpenCurrentDatabase(fn)
-    except universal.com_error as err:
+    except com_error as err:
         # possibly already have the database open
         # TODO: better error handling here.
         # pywintypes.com_error: (-2147352567, 'Exception occurred.',
@@ -166,15 +190,80 @@ def open_access_db(fn):
     return access_app
 
 
-def main():
-    pth = os.path.join(ROOT_PATH, file2)
+def main(folder=None,
+         excel_only=False,
+         ):
 
-    with close_workbook(open_excel_workbook(pth)) as openwb:
-        extract_components(openwb)
+    if folder is None:
+        folder = ROOT_PATH
+
+
+    for dirpath, dirnames, filenames in os.walk(folder):
+        # skip over the .git directory, removing it so we don't traverse it.
+        if '.git' in dirnames:
+            dirnames.remove('.git')
+
+        # ignore all non-Office doc files and temp files ("~filename.ext")
+        filenames = [f for f in filenames
+                     if (f.endswith(VALID_EXT) and f[0] != '~')]
+
+        # Loop through all of the remaining files.
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            name, ext = os.path.splitext(filename)
+            name = "_src~" + name
+            save_path = os.path.join(dirpath, name)
+
+            if ext == EXT_EXCEL:
+                # Extract from excel
+                print("Extracting from Excel: `{}`".format(filename))
+
+                # create a folder for the file's code
+                try:
+                    os.mkdir(os.path.join(dirpath, name))
+                except FileExistsError:
+                    pass
+
+                with open_workbook(filepath) as openwb:
+                    extract_components(openwb, save_path)
+
+            elif ext == EXT_ACCESS:
+                # Extract from Access
+                print("Extracting from Access: `{}`".format(filename))
+
+                try:
+                    os.mkdir(os.path.join(dirpath, name))
+                except FileExistsError:
+                    pass
+
+#                with close_access_db(open_access_db(filepath)) as
+
+            elif ext == EXT_WORD:
+                # Extract from Word
+                print("Extracting from Word: `{}`".format(filename))
+                print("FORMAT NOT YET SUPPORTED")
+            elif ext == EXT_PPT:
+                # Extract from PowerPoint
+                print("Extracting from PowerPoint: `{}`".format(filename))
+                print("FORMAT NOT YET SUPPORTED")
+            else:
+                raise ValueError("How did you even GET here??")
 
 
 if __name__ == "__main__":
-    main()
-#    pth = os.path.join(ROOT_PATH, file1)
-#    with close_access_db(open_access_db(pth)) as opendb:
-#        pass
+    parser = argparse.ArgumentParser()
+    parser.add_argument("folder",
+                        nargs='?',
+                        default=None,
+                        help="the folder to look for OFfice docs in",
+                        type=str,
+                        )
+    parser.add_argument("-x", "--excel-only",
+                        help="only work on excel *.xlsm files",
+                        action="store_true",
+                        )
+
+    args = parser.parse_args()
+
+    main(**vars(args))
+
