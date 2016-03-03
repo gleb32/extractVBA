@@ -216,38 +216,29 @@ def main(path=None,
             name = "_src~" + name
             save_path = os.path.join(dirpath, name)
 
-            if ext == EXT_EXCEL:
-                # Extract from excel
-                print("Extracting from Excel: `{}`".format(filename))
+            # create a folder for the file's code
+            try:
+                os.mkdir(os.path.join(dirpath, name))
+            except FileExistsError:
+                pass
 
-                # create a folder for the file's code
-                try:
-                    os.mkdir(os.path.join(dirpath, name))
-                except FileExistsError:
-                    pass
+            if ext == EXT_EXCEL:
+                print("Extracting from Excel: `{}`".format(filename))
 
                 with open_workbook(filepath) as openwb:
                     extract_components(openwb, save_path)
 
             elif ext == EXT_ACCESS:
-                # Extract from Access
                 print("Extracting from Access: `{}`".format(filename))
-
-                try:
-                    os.mkdir(os.path.join(dirpath, name))
-                except FileExistsError:
-                    pass
 
 #                with close_access_db(open_access_db(filepath)) as opendb:
                 with open_access_db(filepath) as opendb:
                     extract_components(opendb, save_path)
 
             elif ext == EXT_WORD:
-                # Extract from Word
                 print("Extracting from Word: `{}`".format(filename))
                 print("FORMAT NOT YET SUPPORTED")
             elif ext == EXT_PPT:
-                # Extract from PowerPoint
                 print("Extracting from PowerPoint: `{}`".format(filename))
                 print("FORMAT NOT YET SUPPORTED")
             else:
