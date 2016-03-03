@@ -29,16 +29,14 @@ from win32com.universal import com_error
 # Third-party
 #from docopt import docopt
 
-ROOT_PATH = "C:\\gitlab\\temp"
-file1 = "MOCVD DBTPHJ v1.accdb"
-file2 = "MOCVD Equipment Report.xlsm"
-
+# ---------------------------------------------------------------------------
+### Constants
+# ---------------------------------------------------------------------------
 EXT_EXCEL = '.xlsm'
 EXT_ACCESS = '.accdb'
 EXT_WORD = '.docm'
 EXT_PPT = '.pptm'
 VALID_EXT = (EXT_EXCEL, EXT_ACCESS, EXT_WORD, EXT_PPT)
-
 
 class VBCompType(IntEnum):
     """ From http://www.pretentiousname.com/excel_extractvba/ """
@@ -54,6 +52,47 @@ EXTENSIONS = {VBCompType.STD_MODULE: '.bas',
               VBCompType.DOCUMENT: '.txt',
               }
 
+# ---------------------------------------------------------------------------
+### Functions
+# ---------------------------------------------------------------------------
+def handle_com_err_code(err, allowed_codes):
+    """
+    See https://msdn.microsoft.com/en-us/library/aa264975(v=vs.60).aspx
+    for error codes.
+
+    + err.args
+      + from BaseException. Contains all arguments
+
+    + err.hresult
+      + arr.args[0]. Possibly a _win32com_ error code?
+      + Seems to always be -2147352567
+    + err.strerror
+      + args[1]. The error string (from  _win32com_?)
+    + err.excepinfo
+      + args[2]
+      + seems to be everything from the COM object
+    + err.argerror
+      + possibly args[3]
+      + Seems to always be `None`
+
+    + err.excepinfo:
+      + [0] : ??
+      + [1] : ?? Sometimes empty, sometimes "MOCVD BD" (Access)
+      + [2] : error text
+      + [3] : some path to ...\\VBA\\VBA7\\...
+      + [4] : VBA Error code + 1,000,000
+      + [5] : ?? Some non-static code.
+    """
+    if not isinstance(allowed_codes, (list, tuple)):
+        allowed_codes = (allowed_codes, )
+
+    vb_err_code = err.excepinfo[4] - 1000000
+
+    if vb_err_code not in allowed_codes:
+        err_str = "Error: '{}'  (VBA Error code {})"
+        print(err_str.format(err.excepinfo[2], vb_err_code))
+        raise err
+
 
 @contextmanager
 def open_workbook(workbook_file):
@@ -61,25 +100,17 @@ def open_workbook(workbook_file):
     try:
         excel_app = Dispatch("Excel.Application")
         excel_app.Visible = 0
-        try:
-            wb_com_obj = excel_app.Workbooks.Open(workbook_file)
-            yield wb_com_obj
-        except com_error:
-            # probably file not found.
-            # TODO: better error handling
-            """
-            pywintypes.com_error: (-2147352567, 'Exception occurred.',
-            (0, 'Microsoft Excel', "'MOCVD Equipment Report.xlsm' could not
-            be found. Check the spelling of the file name, and verify
-            that the file location is correct.\n\nIf you are trying
-            to open the file from your list of most recently used
-            files, make sure that the file has not been renamed, moved,
-            or deleted.", 'xlmain11.chm', 0, -2146827284), None)
-            """
-            raise
+        wb_com_obj = excel_app.Workbooks.Open(workbook_file)
+        yield wb_com_obj
+    except com_error:
+        # probably file not found.
+        raise
     finally:
-        # https://msdn.microsoft.com/en-us/library/office/ff838613.aspx
-        wb_com_obj.Close(False)   # Close the workbook without saving changes.
+        try:
+            # https://msdn.microsoft.com/en-us/library/office/ff838613.aspx
+            wb_com_obj.Close(False)   # Close the workbook without saving
+        except UnboundLocalError:
+            pass
 
 
 @contextmanager
@@ -92,37 +123,23 @@ def open_access_db(access_file):
     + https://msdn.microsoft.com/en-us/library/office/ff836850.aspx
     """
     try:
-        # TODO: Need to open access first.
         access_app = Dispatch("Access.Application")
 #        access_app.Visible = 1
+        access_app.OpenCurrentDatabase(access_file)
+        yield access_app
+    except com_error as err:
+        if err.excepinfo[2] == "You already have the database open.":
+            print("Warning: database already open")
+        else:
+            raise err
+    finally:
         try:
-            access_app.OpenCurrentDatabase(access_file)
+            access_app.CloseCurrentDatabase()
         except com_error as err:
-            # possibly already have the database open
-            # TODO: better error handling here.
-            # pywintypes.com_error: (-2147352567, 'Exception occurred.',
-            #     (0, None, 'You already have the database open.', None,
-            #      -1, -2146820421), None)
-            print(err)
-        yield access_app
-    finally:
-        access_app.CloseCurrentDatabase()
-
-
-@contextmanager
-def quit_excel(excel_com_obj):
-    try:
-        yield excel_com_obj
-    finally:
-        excel_com_obj.Quit
-
-
-@contextmanager
-def quit_access(access_app):
-    try:
-        yield access_app
-    finally:
-        access_app.Quit
+            if "refers to an object that is closed" in err.excepinfo[2]:
+                pass
+            else:
+                raise
 
 
 def save_component(save_path, text, vbname, ext):
@@ -144,14 +161,10 @@ def extract_component(vb_component):
     vb_code_module = vb_component.CodeModule
     try:
         vb_src = vb_code_module.Lines(1, vb_code_module.CountOfLines)
-    except com_error:
+    except com_error as err:
         # it's likely that this component doesn't have any code
-        # TODO: Better error handling here.
-        # pywintypes.com_error: (-2147352567, 'Exception occurred.',
-        #     (0, '', 'Invalid procedure call or argument',
-        #      'C:\\PROGRA~1\\COMMON~1\\MICROS~1\\VBA\\VBA7\\1033\\VbLR6.chm',
-        #      1000005, -2147024809), None)
         vb_src = None
+        handle_com_err_code(err, 5)      # Invalid procedure call
     else:
         pass
 
@@ -173,12 +186,8 @@ def extract_components(com_obj, save_path):
 
         try:
             component = project.VBComponents(i)
-        except com_error:
-            # TODO: Better error handling here.
-            # pywintypes.com_error: (-2147352567, 'Exception occurred.',
-            #   0, 'VBAProject', 'Subscript out of range',
-            #   'C:\\PROGRA~1\\COMMON~1\\MICROS~1\\VBA\\VBA7\\1033\\VbLR6.chm',
-            #   1000009, -2146828279), None)
+        except com_error as err:
+            handle_com_err_code(err, 9)      # Subscript out of range
             break
 
         vb_name, vb_type, _, vb_src = extract_component(component)
@@ -222,25 +231,33 @@ def main(path=None,
             except FileExistsError:
                 pass
 
+            # Extract from the various file types.
             if ext == EXT_EXCEL:
                 print("Extracting from Excel: `{}`".format(filename))
-
-                with open_workbook(filepath) as openwb:
-                    extract_components(openwb, save_path)
+                try:
+                    with open_workbook(filepath) as openwb:
+                        extract_components(openwb, save_path)
+                except com_error as err:
+                    print("!! Error extacting from {}".format(filename))
+                    continue
 
             elif ext == EXT_ACCESS:
                 print("Extracting from Access: `{}`".format(filename))
-
-#                with close_access_db(open_access_db(filepath)) as opendb:
-                with open_access_db(filepath) as opendb:
-                    extract_components(opendb, save_path)
+                try:
+                    with open_access_db(filepath) as opendb:
+                        extract_components(opendb, save_path)
+                except com_error as err:
+                    print("!! Error extacting from {}".format(filename))
+                    continue
 
             elif ext == EXT_WORD:
                 print("Extracting from Word: `{}`".format(filename))
                 print("FORMAT NOT YET SUPPORTED")
+
             elif ext == EXT_PPT:
                 print("Extracting from PowerPoint: `{}`".format(filename))
                 print("FORMAT NOT YET SUPPORTED")
+
             else:
                 raise ValueError("How did you even GET here??")
 
@@ -248,8 +265,6 @@ def main(path=None,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("path",
-#                        nargs='?',
-#                        default=None,
                         help="the path to look for Office docs in",
                         type=str,
                         )
