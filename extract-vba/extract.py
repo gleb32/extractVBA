@@ -243,7 +243,7 @@ def main(path=None,
                 try:
                     with open_workbook(filepath) as openwb:
                         extract_components(openwb, save_path)
-                except com_error as err:
+                except com_error:
                     print("!! Error extacting from {}".format(filename))
                     continue
 
@@ -252,7 +252,7 @@ def main(path=None,
                 try:
                     with open_access_db(filepath) as opendb:
                         extract_components(opendb, save_path)
-                except com_error as err:
+                except com_error:
                     print("!! Error extacting from {}".format(filename))
                     continue
 
